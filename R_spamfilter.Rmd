@@ -1,0 +1,167 @@
+---
+title: "R spam filter using Naive Bayes Algorithm"
+output: html_notebook
+---
+Use maching learning (Bayes Algorithm) to build a spam classifier.
+
+data can be downloaed from here 
+https://archive.ics.uci.edu/ml/datasets/sms+spam+collection
+
+load libraries
+
+```{r}
+library(readr)
+library(dplyr)
+library(stringr)
+library(purrr)
+```
+
+load data.
+2746 were non-spams and 438 were spams
+
+```{r}
+spam_original <- read.csv("SMSSpamCollection", sep='\t', header = FALSE)
+spam <- spam_original
+colnames(spam) <- c("label","sms")
+spam %>%
+  group_by(label) %>%
+  summarize(frequency = n())
+
+#added an index column so each row can be easily indexed
+spam$index <- 1:nrow(spam)
+```
+divide up our spam data into 3 distinct datasets.
+
+1. 80% A training set, which we'll use to "train" the computer how to classify messages.
+2. 10% A cross-validation set, which we'll use to assess how different choices of alpha affect the prediction accuracy
+3. 10% A test set, which we'll use to test how good the spam filter is with classifying new messages.
+```{r}
+set.seed(1)
+index_ham <- spam$index[spam$label == "ham"]
+index_training_ham <- sample(index_ham, size = round(0.8*length(index_ham)))
+leftover <- setdiff(index_ham, index_training_ham)
+index_validation_ham <- sample(leftover, round(0.1*length(index_ham)))
+index_test_ham <- setdiff(leftover, index_validation_ham)
+
+#validate the spliting of dataset
+test <- union(index_training_ham, union(index_validation_ham, index_test_ham))
+setdiff(test, index_ham)
+
+index_spam <- spam$index[spam$label=="spam"]
+index_training_spam <- sample(index_spam, size = round(0.8*length(index_spam)))
+leftover <- setdiff(index_spam, index_training_spam)
+index_validation_spam <- sample(leftover, round(0.1*length(index_spam)))
+index_test_spam <- setdiff(leftover, index_validation_spam)
+
+test <- union(index_training_spam, union(index_validation_spam, index_test_spam))
+setdiff(test, index_spam)
+```
+all words to a lower case,
+remove punctuation
+remove double space
+```{r}
+spam <- spam %>%
+  mutate(sms = tolower(sms)) %>%
+  mutate(sms = str_replace_all(sms,"[^a-z\\s]","")) %>%
+  mutate(sms = str_replace_all(sms,"\\s\\s"," "))
+```
+
+create a vocabulary in the training sets
+```{r}
+training_sms <- spam$sms[union(index_training_ham,index_training_spam)]
+vocabulary <- unique(unlist(str_split(training_sms," ")))
+n_vocabulary <- length(vocabulary)
+```
+Calculate the following
+P(spam)--probability of spam training
+P(ham)--probability of ham training
+N(spam)--total words in spam training
+N(ham)--total words in ham training
+```{r}
+p_ham <- length(index_training_ham)/(length(index_training_spam) + length(index_training_ham))
+
+p_spam <- length(index_training_spam)/(length(index_training_spam) + length(index_training_ham))
+
+ham_sms <- spam$sms[index_training_ham]
+n_ham <- length(unlist(str_split(ham_sms," ")))
+
+spam_sms <- spam$sms[index_training_spam]
+n_spam <- length(unlist(str_split(spam_sms," ")))
+
+
+```
+
+Calculate P(word|ham) and P(word|spam) for every word in the vacabulary
+p_word_ham <- n_word_ham+alpha/n_ham+alpha*n_vocabulary, 
+p_word_spam <- n_word_spam+alpha/n_spam + alpha*n_vocabulary
+```{r}
+
+#initial value alpha = 1
+alpha = 0.6
+
+ham.prob <- list()
+spam.prob <- list()
+
+for(word in vocabulary){
+  n_word_ham <- sum(unlist(map(ham_sms, function(x) str_count(x,word))))
+  n_word_spam <- sum(unlist(map(spam_sms, function(x) str_count(x,word))))
+  ham.prob[[word]] <- (n_word_ham + alpha) /(n_ham + alpha * n_vocabulary)
+  spam.prob[[word]]<- (n_word_spam + alpha) /(n_spam + alpha * n_vocabulary)
+}
+```
+
+Create the spam filter!
+P(spam|message) ~ P(spam) * P(word1|spam) * P(word2|spam) *.....
+P(ham|message) ~ P(ham) * P(word1|ham) * P(word2|ham) * .....
+```{r}
+spam_filter <- function (message) {
+  if(message != "" & message != " "){
+    word_list <- unlist(str_split(message," "))
+    word_list <- word_list[word_list != ""]
+    p_ham_message <- p_ham * reduce(map_dbl(word_list,function(x) ifelse(x %in% vocabulary, ham.prob[[x]], alpha/(n_ham + alpha * n_vocabulary))),`*`)
+    p_spam_message <- p_spam * reduce(map_dbl(word_list,function(x) ifelse(x %in% vocabulary, spam.prob[[x]], alpha/(n_spam + alpha * n_vocabulary))),`*`)
+    classification <- ifelse(p_ham_message > p_spam_message, "ham", "spam")
+  }
+  else{
+    classification <- "ham"
+  }
+  #print(classification)
+}
+```
+
+Apply it to the training data
+When alpha = 1, training data accuracy = 0.9709, validation data accuracy = 0.9467
+When alpha = 0.1, training data accuracy = 0.9921, validation data accuracy = 0.9373
+When alpha = 0.3, training data accuracy = 0.9893, validation data accuracy = 0.9436
+When alpha = 0.5, training data accuracy = 0.9862, validation data accuracy = 0.9498
+When alpha = 0.55, training data accuracy = 0.98665, validation data accuracy = 0.9529781
+When alpha = 0.6, training data accuracy = 0.9843, validation data accuracy = 0.9561129
+When alpha = 0.65, training data accuracy = 0.9827, validation data accuracy = 0.9561129
+When alpha = 0.7, training data accuracy = 0.9811, validation data accuracy = 0.9467
+
+The best number is alpha = 0.6
+```{r}
+get_accuracy <- function (data) {
+  data$prediction <- map_chr(data$sms, function (x) spam_filter(x))
+  data$accuracy = (data$label==data$prediction)
+  summary <- data %>%
+  group_by(label,prediction) %>%
+  summarize(total = n(), correct = sum(accuracy))
+  sum(summary$correct)/sum(summary$total)
+} 
+training_data <- spam[union(index_training_ham, index_training_spam),]
+accuracy_training <- get_accuracy(training_data)
+validation_data <- spam[union(index_validation_ham, index_validation_spam),]
+accuracy_validation <- get_accuracy(validation_data)
+
+
+
+```
+
+Use the best alpha on the test set. The test accuracy is 0.9685535
+
+```{r}
+test_data <- spam[union(index_test_ham, index_test_spam),]
+accuracy_test <- get_accuracy(test_data)
+```
+

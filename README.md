@@ -1,0 +1,1 @@
+Use machine learning to build a spam filter, 80% training, 10% validation and 10% testing
